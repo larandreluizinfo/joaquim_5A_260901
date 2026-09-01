@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Futebol HTML</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: Arial, sans-serif;
+    color: #fff;
+    gap: 10px;
+    overflow: hidden;
+  }
+  #canvas {
+    background: #2e8b57;
+    border: 4px solid #fff;
+    border-radius: 8px;
+    box-shadow: 0 0 30px rgba(0,0,0,.6);
+    display: block;
+    max-width: 95vw;
+    max-height: 80vh;
+  }
+  .info {
+    background: #16213e;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 15px;
+    text-align: center;
+    line-height: 1.6;
+  }
+  .info b { color: #ffd166; }
+  .score {
+    font-size: 26px;
+    font-weight: bold;
+    background: #0f3460;
+    padding: 6px 24px;
+    border-radius: 8px;
+    letter-spacing: 2px;
+  }
+  .msg { color: #ffd166; font-weight: bold; }
+</style>
+</head>
+<body>
+<div class="score" id="score">VOCÊ 0 - 0 CPU</div>
+<canvas id="canvas" width="900" height="560"></canvas>
+<div class="info">
+  <b>WASD</b> = movimentar &nbsp;|&nbsp; <b>Q</b> = passe &nbsp;|&nbsp; <b>A</b> = chute<br>
+  <span class="msg" id="msg"></span>
+</div>
+
+<script>
+(function() {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const msgEl = document.getElementById('msg');
+
+  const W = canvas.width;
+  const H = canvas.height;
+  const GOAL_H = 120;
+  const GOAL_DEPTH = 18;
+  const PLAYER_R = 16;
+  const BALL_R = 9;
+
+  // Planos de jogo
+  const HOME = 'home', AWAY = 'away';
+  const STATE = { PLAY: 0, GOAL: 1, RESET: 2 };
+
+  let state = STATE.RESET;
+  let stateTimer = 0;
+  let scoreHome = 0, scoreAway = 0;
+  let lastGoalMsg = '';
+
+  // Seleção de equipes
+  let home = [];
+  let away = [];
+  let ball = null;
+  let userPlaysHome = true;
+  let userPlayer = null;
+  let message = '';
+  let messageTimer = 0;
+
+  const speedBase = {
+    player: 4.2,
+    comp: 2.7,
+    ballPass: 8.5,
+    ballShot: 12.5
+  };
+
+  // ---------- Funções geométricas ----------
+  function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+  function setTeam() {
+    const pos = [
+      {x: W * 0.52, y: H - 70},
+      {x: W * 0.30, y: H - 130},
+      {x: W * 0.52, y: H - 160},
+      {x: W * 0.78, y: H - 130},
+      {x: W * 0.40, y: H - 240},
+      {x: W * 0.64, y: H - 240},
+      {x: W * 0.50, y: H - 320}
+    ];
+    return pos.map((p, i) => ({
+      id: i,
+      x: p.x, y: p.y,
+      vx: 0, vy: 0,
+      target: { x: p.x, y: p.y },
+      hasBallTime: 0
+    }));
+  }
+
+  function resetPositions() {
+    home = setTeam();
+    away = setTeam().map(p => ({ ...p, x: W - p.x, y: H - p.y }));
+    ball = { x: W / 2, y: H / 2, vx: 0, vy: 0, owner: null };
+    userPlayer = home[0];
+    state = STATE.PLAY;
+  }
+
+  // ---------- Passe ----------
+  function ballTowardOther(obj) { return dist(ball, obj) >= PLAYER_R + BALL_R + 4; }
+
+  function doPass() {
+    if (ball.owner !== userPlayer) return;
+    const shooter = userPlayer;
+    const allies = ball.owner.team === HOME ? home : away;
+    const targets = allies.filter(p => p !== shooter);
+    if (!targets.length) return;
+
+    // Melhor alvo: longe dos adversários e na direção do ataque
+    let best = null, bestScore = -Infinity;
+    const attackDir = userPlaysHome ? -1 : 1;
+    for (const t of targets) {
+      let s = -dist(shooter, t);
+      // prefere à frente
+      if ((t.y - shooter.y) * attackDir < 0) s += 160;
+      // prefere perto do gol adversário
+      s -= (attackDir * t.y) * 0.2;
+      // evita adversários perto do alvo
+      const foes = (ball.owner.team === HOME ? away : home);
+      for (const f of foes) s += Math.min(0, (dist(f, t) - 120) * 0.5);
+      if (s > bestScore) { bestScore = s; best = t; }
+    }
+    if (!best) return;
+
+    launchBall(shooter, best, speedBase.ballPass, 'pass');
+    showMessage('PASSE!');
+  }
+
+  // ---------- Chute ao gol ----------
+  function doShoot() {
+    if (ball.owner !== userPlayer) return;
+    const shooter = userPlayer;
+    // Gol adversário
+    const goalY = userPlaysHome ? GOAL_DEPTH : H - GOAL_DEPTH;
+    const center = W / 2;
+    const target = { x: center + (Math.random() * 40 - 20), y: goalY };
+    launchBall(shooter, target, speedBase.ballShot, 'shot');
+    showMessage('CHUTE!');
+  }
+
+  function launchBall(from, to, speed, kind) {
+    const ang = Math.atan2(to.y - from.y, to.x - from.x);
+    ball.vx = Math.cos(ang) * speed;
+    ball.vy = Math.sin(ang) * speed;
+    ball.owner = null;
+    if (kind === 'shot' && Math.abs(to.y) <= 1) {
+      // goalie attempt
+    }
+  }
+
+  function showMessage(m) {
+    message = m;
+    messageTimer = 60;
+  }
+
+  // ---------- Física da bola ----------
+  function updateBall() {
+    if (ball.owner) {
+      ball.x = ball.owner.x;
+      ball.y = ball.owner.y;
+      ball.vx = 0; ball.vy = 0;
+      markBallOwned(ball.owner);
+      return;
+    }
+    ball.x += ball.vx;
+    ball.y += ball.vy;
+    ball.vx *= 0.985;
+    ball.vy *= 0.985;
+    if (Math.hypot(ball.vx, ball.vy) < 0.4) { ball.vx = 0; ball.vy = 0; }
+
+    // colisão horizontal
+    if (ball.x - BALL_R < 0) { ball.x = BALL_R; ball.vx *= -0.5; }
+    if (ball.x + BALL_R > W) { ball.x = W - BALL_R; ball.vx *= -0.5; }
+    // vertical fora da área do gol ou acima/abaixo
+    if (ball.y - BALL_R < GOAL_DEPTH || ball.y + BALL_R > H - GOAL_DEPTH) {
+      const overGoal = Math.abs(ball.x - W / 2) < GOAL_H / 2;
+      if (!overGoal) {
+        if (ball.y - BALL_R < GOAL_DEPTH) ball.y = GOAL_DEPTH + BALL_R; else ball.y = H - GOAL_DEPTH - BALL_R;
+        ball.vy *= -0.55;
+      }
+    }
+
+    // gol?
+    if (ball.y < GOAL_DEPTH + BALL_R && Math.abs(ball.x - W / 2) < GOAL_H / 2 + BALL_R && ball.vy < 0) {
+      scoreAway++; onGoal('GOOOOL do CPU!', AWAY);
+      return;
+    }
+    if (ball.y > H - GOAL_DEPTH - BALL_R && Math.abs(ball.x - W / 2) < GOAL_H / 2 + BALL_R && ball.vy > 0) {
+      scoreHome++; onGoal('GOOOOL!', HOME);
+      return;
+    }
+  }
+
+  function markBallOwned(p) {
+    if (p.team === HOME && p === userPlayer) return;
+    p.hasBallTime++;
+    if (p.hasBallTime > 40) {
+      const allies = p.team === HOME ? home : away;
+      const tgt = allies[Math.floor(Math.random() * allies.length)];
+      if (tgt && tgt !== p) {
+        launchBall(p, tgt, speedBase.ballPass, 'pass');
+        p.hasBallTime = 0;
+      }
+    }
+  }
+
+  function onGoal(msg, team) {
+    lastGoalMsg = msg;
+    state = STATE.GOAL;
+    stateTimer = 90;
+    updateScore();
+  }
+
+  function updateScore() {
+    scoreEl.textContent = `VOCÊ ${scoreHome} - ${scoreAway} CPU`;
+  }
+
+  // ---------- Inteligência dos jogadores ----------
+  function speedLimit(p, max) {
+    const s = Math.hypot(p.vx, p.vy);
+    if (s > max) { p.vx = p.vx / s * max; p.vy = p.vy / s * max; }
+  }
+
+  function updateHome() {
+    // jogador controlado
+    if (ball.owner === userPlayer) {
+      userPlayer.vx *= 0.8; userPlayer.vy *= 0.8;
+    }
+    userPlayer.x += userPlayer.vx;
+    userPlayer.y += userPlayer.vy;
+    userPlayer.vx *= 0.92; userPlayer.vy *= 0.92;
+    clampToField(userPlayer);
+
+    // IA dos companheiros
+    for (const p of home) {
+      if (p === userPlayer) continue;
+      if (p === ball.owner) {
+        // mova-se em direção ao gol adversário
+        const gx = W / 2;
+        const gy = userPlaysHome ? GOAL_DEPTH : H - GOAL_DEPTH;
+        movePlayer(p, gx, gy, speedBase.comp);
+      } else if (ball.owner === null && dist(p, ball) < 130) {
+        // vá buscar a bola se livre
+        movePlayer(p, ball.x, ball.y, speedBase.comp);
+      } else {
+        // posicionamento
+        movePlayer(p, p.target.x, p.target.y, speedBase.comp * 0.8);
+      }
+      clampToField(p);
+      tryTakeBall(p);
+    }
+  }
+
+  function updateAway() {
+    const leaderIdx = Math.floor(Math.random() * away.length);
+    away.forEach((p, i) => {
+      if (p === ball.owner) {
+        const gx = W / 2;
+        const gy = userPlaysHome ? H - GOAL_DEPTH : GOAL_DEPTH;
+        movePlayer(p, gx, gy, speedBase.comp);
+      } else if (ball.owner === null && (dist(p, ball) < 150 || i === leaderIdx)) {
+        movePlayer(p, ball.x, ball.y, speedBase.comp + 0.3);
+      } else {
+        movePlayer(p, p.target.x, p.target.y, speedBase.comp * 0.8);
+      }
+      clampToField(p);
+      tryTakeBall(p);
+    });
+  }
+
+  function movePlayer(p, tx, ty, max) {
+    const dx = tx - p.x, dy = ty - p.y;
+    const d = Math.hypot(dx, dy);
+    if (d < 2) { p.vx = 0; p.vy = 0; return; }
+    const s = Math.min(max, d);
+    p.vx = dx / d * s;
+    p.vy = dy / d * s;
+    p.x += p.vx;
+    p.y += p.vy;
+  }
+
+  function tryTakeBall(p) {
+    if (!ball.owner && dist(p, ball) < PLAYER_R + BALL_R + 2) {
+      ball.owner = p;
+      p.hasBallTime = 0;
+      ball.vx = 0; ball.vy = 0;
+      if (p !== userPlayer && Math.random() < 0.15) {
+        const gx = W / 2;
+        const gy = p.team === HOME ? GOAL_DEPTH : H - GOAL_DEPTH;
+        if (Math.random() < 0.5) launchBall(p, {x: gx, y: gy}, speedBase.ballShot, 'shot');
+        else doPassFor(p);
+      }
+    }
+  }
+
+  function doPassFor(p) {
+    const allies = p.team === HOME ? home : away;
+    const t = allies.find(o => o !== p && dist(o, p) < 260);
+    if (t) launchBall(p, t, speedBase.ballPass, 'pass');
+  }
+
+  function clampToField(p) {
+    const minX = PLAYER_R, maxX = W - PLAYER_R;
+    const minY = GOAL_DEPTH + PLAYER_R, maxY = H - GOAL_DEPTH - PLAYER_R;
+    p.x = Math.max(minX, Math.min(maxX, p.x));
+    p.y = Math.max(minY, Math.min(maxY, p.y));
+  }
+
+  // ---------- Input do jogador ----------
+  const keys = {};
+  window.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    keys[k] = true;
+    if (k === 'q') doPass();
+    if (k === 'a') doShoot();
+    e.preventDefault();
+  });
+  window.addEventListener('keyup', (e) => {
+    keys[e.key.toLowerCase()] = false;
+  });
+
+  function updateUser() {
+    let dx = 0, dy = 0;
+    if (keys['w']) dy -= 1;
+    if (keys['s']) dy += 1;
+    if (keys['a']) dx -= 1;
+    if (keys['d']) dx += 1;
+    const d = Math.hypot(dx, dy);
+    if (d > 0) {
+      const s = speedBase.player;
+      userPlayer.vx = dx / d * s;
+      userPlayer.vy = dy / d * s;
+      userPlayer.x += userPlayer.vx;
+      userPlayer.y += userPlayer.vy;
+      clampToField(userPlayer);
+    }
+  }
+
+  // ---------- Estado principal ----------
+  function update() {
+    if (state === STATE.PLAY) {
+      updateUser();
+      updateHome();
+      updateAway();
+      updateBall();
+
+      // pegada do jogador
+      if (!ball.owner && ball.vx === 0 && ball.vy === 0 && dist(userPlayer, ball) < PLAYER_R + BALL_R + 2) {
+        ball.owner = userPlayer;
+      }
+    } else {
+      stateTimer--;
+      if (stateTimer <= 0) {
+        state = STATE.RESET;
+        resetPositions();
+      }
+    }
+    if (messageTimer > 0) messageTimer--;
+    else message = '';
+    msgEl.textContent = message || (state === STATE.GOAL ? lastGoalMsg : '');
+  }
+
+  // ---------- Desenho ----------
+  function drawField() {
+    ctx.fillStyle = '#2e8b57';
+    ctx.fillRect(0, 0, W, H);
+
+    // listras
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    for (let i = 0; i < 8; i++) { ctx.fillRect((i % 2) * W / 8, 0, W / 8, H); }
+
+    // linhas
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(0, 0, W, H);
+    ctx.beginPath();
+    ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(W / 2, H / 2, 65, 0, Math.PI * 2); ctx.stroke();
+
+    // área do gol
+    const areaW = 180, areaH = 70;
+    ctx.strokeRect(W / 2 - areaW / 2, 0, areaW, areaH);
+    ctx.strokeRect(W / 2 - areaW / 2, H - areaH, areaW, areaH);
+    ctx.strokeRect(W / 2 - GOAL_H / 2, 0, GOAL_H, 4);
+    ctx.strokeRect(W / 2 - GOAL_H / 2, H - 4, GOAL_H, 4);
+
+    // golos
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(W / 2 - GOAL_H / 2, 0, GOAL_H, GOAL_DEPTH);
+    ctx.fillRect(W / 2 - GOAL_H / 2, H - GOAL_DEPTH, GOAL_H, GOAL_DEPTH);
+  }
+
+  function drawBall() {
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, BALL_R, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, BALL_R / 2.4, 0, Math.PI * 2);
+    ctx.fillStyle = '#333';
+    ctx.fill();
+  }
+
+  function drawPlayer(p) {
+    const isUser = p === userPlayer;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, PLAYER_R, 0, Math.PI * 2);
+    ctx.lineWidth = 3;
+    if (p.team === HOME) {
+      ctx.fillStyle = isUser ? '#4fc3f7' : '#2196f3';
+      ctx.strokeStyle = isUser ? '#0d47a1' : '#fff';
+    } else {
+      ctx.fillStyle = isUser ? '#ff8a65' : '#f44336';
+      ctx.strokeStyle = isUser ? '#7f1d1d' : '#fff';
+    }
+    ctx.fill();
+    ctx.stroke();
+
+    // seta de direção
+    const len = 22;
+    ctx.beginPath();
+    if (p.team === HOME) {
+      ctx.moveTo(p.x, p.y - len); ctx.lineTo(p.x, p.y + len * 0.5);
+    } else {
+      ctx.moveTo(p.x, p.y + len); ctx.lineTo(p.x, p.y - len * 0.5);
+    }
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // indicador dono da bola
+    if (ball.owner === p) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, PLAYER_R + 5, 0, Math.PI * 2);
+      ctx.strokeStyle = '#ffd166';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  function draw() {
+    drawField();
+    for (const p of away) drawPlayer(p);
+    for (const p of home) drawPlayer(p);
+    drawBall();
+  }
+
+  // ---------- Loop ----------
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  resetPositions();
+  updateScore();
+  loop();
+})();
+</script>
+</body>
+</html>
