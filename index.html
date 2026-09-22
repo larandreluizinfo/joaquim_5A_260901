@@ -22,6 +22,12 @@
     margin-top: 8px; font-size: 20px; font-weight: bold; color: #ffd166;
     min-height: 26px; text-shadow: 0 2px 6px #000;
   }
+  #narrador {
+    margin-top: 4px; font-size: 14px; color: #7fd4ff;
+    min-height: 20px; text-shadow: 0 1px 4px #000;
+    background: rgba(0,0,0,.45); padding: 4px 14px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,.18);
+  }
   #info {
     position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
     background: rgba(0,0,0,.55); padding: 8px 18px; border-radius: 10px;
@@ -45,11 +51,12 @@
   <div id="msg"></div>
 </div>
 <div class="controls">
-  <b>WASD / SETAS</b> mover &nbsp;•&nbsp; <b>Q</b> passe &nbsp;•&nbsp; <b>J</b> chute
+  <b>WASD / SETAS</b> mover &nbsp;•&nbsp; <b>Q</b> passe &nbsp;•&nbsp; <b>J</b> chute &nbsp;•&nbsp; <b>X</b> carrinho
 </div>
 <div id="info">
-  Mova com <b>WASD ou SETAS</b> &nbsp;•&nbsp; <b>J</b> chuta &nbsp;•&nbsp; <b>Q</b> passa &nbsp;•&nbsp; Chegue perto do adversário para roubar a bola
+  Mova com <b>WASD ou SETAS</b> &nbsp;•&nbsp; <b>J</b> chuta &nbsp;•&nbsp; <b>Q</b> passa &nbsp;•&nbsp; <b>X</b> carrinho (derruba a bola do bot) &nbsp;•&nbsp; Chegue perto do adversário para roubar a bola
 </div>
+<div id="narrador">🎙️ Bem-vindo ao Futebol 3D!</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
@@ -57,6 +64,7 @@
   const container = document.getElementById('game');
   const scoreEl = document.getElementById('score');
   const msgEl = document.getElementById('msg');
+  const narrEl = document.getElementById('narrador') || document.createElement('div');
 
   // ---------- Cena ----------
   const scene = new THREE.Scene();
@@ -265,9 +273,26 @@
     return g;
   }
 
+  function makeReferee() {
+    const r = makePlayer(0x23272e, 0xf2c9a0);
+    const whistle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.09, 0.09, 0.6, 8),
+      new THREE.MeshLambertMaterial({ color: 0xeeeeee })
+    );
+    whistle.rotation.z = Math.PI / 2;
+    whistle.position.set(0.34, 1.1, 0.22);
+    r.add(whistle);
+    return r;
+  }
+
   let players = [];
   let ball = null;
   let user = null;
+  let referee = null;
+  let refX = 0, refZ = 6;
+  referee = makeReferee();
+  referee.position.set(0, 0, 6);
+  scene.add(referee);
   const userMeshColor = 0x4fc3f7;
   const homeColor = 0x2196f3;
   const awayColor = 0xf44336;
@@ -277,7 +302,7 @@
     { x: 8,  z: 10 },
     { x: -8, z: 10 },
     { x: 12, z: -6 },
-    { x: -12, z: -6 }
+    { x: 0,  z: 34, keeper: true }
   ];
   const awayBase = [
     { x: 0,  z: -34, keeper: true },
@@ -295,8 +320,9 @@
     players = [];
     homeBase.forEach((b, i) => {
       const p = {
-        team: 'home', slot: i, isUser: i === 0,
+        team: 'home', slot: i, isUser: i === 0, isKeeper: !!b.keeper,
         x: b.x, z: b.z, facing: 0, kickTimer: 0,
+        slideTimer: 0, slideVx: 0, slideVz: 0,
         mesh: makePlayer(i === 0 ? userMeshColor : homeColor, 0xf2c9a0)
       };
       if (i === 0) user = p;
@@ -314,13 +340,14 @@
 
     ball = {
       x: user.x, z: user.z, vx: 0, vz: 0, owner: user, mesh: makeBall(),
-      spin: 0, rotX: 0, rotZ: 0,
+      spin: 0, rotX: 0, rotZ: 0, kicker: null, kickTimer: 0,
       isSlow: function() { return Math.hypot(this.vx, this.vz) < 6; }
     };
     scene.add(ball.mesh);
 
     state = 'play';
     msgEl.textContent = 'BOLA COM VOCÊ!';
+    narrate('O árbitro apita o início! A bola está com você!');
   }
 
   function makeBall() {
@@ -379,11 +406,25 @@
     keys[k] = true;
     if (k === 'q') doPass();
     if (k === 'j') doShoot();
+    if (k === 'x') doTackle();
     if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
   });
   window.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
 
   function showMessage(m) { msgEl.textContent = m; }
+  function narrate(text) {
+    narrEl.textContent = '🎙️ ' + text;
+    if ('speechSynthesis' in window) {
+      try {
+        const clean = text.replace(/[\u{1F000}-\u{1FAFF}\u{2B00}-\u{2BFF}\u{2600}-\u{27BF}]/gu, ' ');
+        const u = new SpeechSynthesisUtterance(clean);
+        u.lang = 'pt-BR';
+        u.rate = 1.1;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(u);
+      } catch (err) {}
+    }
+  }
   function flash(m) {
     showMessage(m);
     if (state === 'play') {
@@ -399,6 +440,7 @@
     if (target) {
       launchBall(user, target.x, target.z, PASS_SPEED);
       showMessage('PASSE!');
+      narrate('Passou a bola!');
     } else {
       showMessage('Sem companheiro à frente');
     }
@@ -427,6 +469,18 @@
     const gx = clamp(0 + (Math.random() * 7 - 3.5), -3, 3);
     launchBall(user, gx * 6, gz + 3, SHOT_SPEED);
     showMessage('CHUTE!');
+    narrate('Ele vai chutar!');
+  }
+
+  // ---------- Carrinho (X) ----------
+  function doTackle() {
+    if (!user || user.slideTimer > 0 || state !== 'play') return;
+    const fx = Math.sin(user.facing), fz = Math.cos(user.facing);
+    user.slideTimer = 0.5;
+    user.slideVx = fx * 17;
+    user.slideVz = fz * 17;
+    showMessage('CARRINHO!');
+    narrate('Carrinho por baixo!');
   }
 
   function launchBall(from, tx, tz, speed) {
@@ -435,6 +489,8 @@
     ball.owner = null;
     ball.vx = dx / d * speed;
     ball.vz = dz / d * speed;
+    ball.kicker = from;
+    ball.kickTimer = 0.55;
     const ang = Math.atan2(dx, dz);
     if (from.mesh) from.mesh.rotation.y = ang;
     from.facing = ang;
@@ -494,7 +550,7 @@
 
     if (p.isKeeper) {
       // goleiro: fica na linha guardando
-      const goalZ = Math.sign(teamGoalPz(p.team)) * FIELD.lineZ;
+      const goalZ = Math.sign(-teamGoalPz(p.team)) * FIELD.lineZ;
       const targetX = clamp(ball.x * 0.5, -3.4, 3.4);
       const targetZ = goalZ - Math.sign(goalZ) * 4;
       const toBall = dist2(p, ball);
@@ -542,7 +598,7 @@
     if (!base) return;
     // desloca a formação levemente para acompanhar a bola
     const tx = clamp(base.x + (ball.x - base.x) * 0.35, -32, 32);
-    const tz = base.z + (ball.z - base.z) * 0.2;
+    const tz = base.z + (ball.z - base.z) * 0.35;
     moveToward(p, tx, tz, AI_SPEED * 0.8, dt);
   }
 
@@ -555,6 +611,7 @@
       ball.vx = 0; ball.vz = 0;
       return;
     }
+    ball.kickTimer = Math.max(0, ball.kickTimer - dt);
     ball.x += ball.vx * dt;
     ball.z += ball.vz * dt;
     const fric = Math.exp(-1.6 * dt);
@@ -592,10 +649,12 @@
     if (state !== 'play') return;
     if (z <= -FIELD.netZ) { // gol do azul (home)
       flash('GOOOOL! ⚽');
+      narrate('GOOOOL! Que golaço do seu time!');
       scoreHome++;
       updateScore();
     } else if (z >= FIELD.netZ) {
       flash('GOOOL do CPU 😅');
+      narrate('O adversário marcou um gol!');
       scoreAway++;
       updateScore();
     }
@@ -608,6 +667,21 @@
   // ---------- Posse e desarme ----------
   function handlePossession(dt) {
     if (ball.owner) {
+      // carrinho do jogador derruba a bola do adversário
+      if (user && user.slideTimer > 0 && ball.owner.team !== 'home') {
+        const ds = dist2(user, ball.owner);
+        if (ds < 3.2) {
+          ball.owner = null;
+          ball.vx = user.slideVx * 0.9;
+          ball.vz = user.slideVz * 0.9;
+          ball.kicker = user;
+          ball.kickTimer = 0.4;
+          user.slideTimer = 0;
+          showMessage('CARRINHO! BOLA SOLTA!');
+          narrate('Carrinho! A bola se solta!');
+          return;
+        }
+      }
       for (const p of players) {
         if (p.team === ball.owner.team) continue;
         const d = dist2(p, ball.owner);
@@ -615,11 +689,13 @@
           if (d < 2.4) {
             ball.owner = p;
             showMessage('ROUBOU!');
+            narrate('Roubada de bola!');
           }
         } else if (ball.owner.isUser) {
           if (d < 1.9 && Math.random() < dt * 1.2) {
             ball.owner = p;
             showMessage('PERDEU a bola!');
+            narrate('Perdeu a bola para o CPU!');
           }
         } else if (d < 1.5 && Math.random() < dt * 1.4) {
           ball.owner = p;
@@ -634,6 +710,8 @@
       if (d < bestD && d < PICK) { bestD = d; best = p; }
     }
     if (best) {
+      // quem acabou de chutar não pode recolher a bola na hora
+      if (ball.kicker === best && ball.kickTimer > 0) return;
       ball.owner = best;
       if (best.team === 'away' && !best.isUser) best.kickTimer = 0.6 + Math.random() * 0.8;
       if (best.isUser) showMessage('BOLA COM VOCÊ!');
@@ -662,6 +740,30 @@
       p.z = clamp(p.z, -FIELD.lineZ, FIELD.lineZ);
       p.mesh.position.set(p.x, 0, p.z);
     }
+  }
+
+  // ---------- Árbitro ----------
+  function updateReferee(dt) {
+    if (!referee) return;
+    const dx = ball.x - refX, dz = ball.z - refZ;
+    const d = Math.hypot(dx, dz);
+    if (d > 3.5) {
+      const s = Math.min(8.6, d / dt);
+      refX += dx / d * s * dt;
+      refZ += dz / d * s * dt;
+    }
+    // não encosta nos jogadores
+    for (const p of players) {
+      const dd = Math.hypot(p.x - refX, p.z - refZ);
+      if (dd > 0.001 && dd < 1.4) {
+        refX -= (p.x - refX) / dd * (1.4 - dd) * 0.5;
+        refZ -= (p.z - refZ) / dd * (1.4 - dd) * 0.5;
+      }
+    }
+    refX = clamp(refX, -FIELD.boundX, FIELD.boundX);
+    refZ = clamp(refZ, -FIELD.lineZ, FIELD.lineZ);
+    referee.rotation.y = Math.atan2(dx, dz);
+    referee.position.set(refX, 0, refZ);
   }
 
   // ---------- Frente da câmera ----------
@@ -700,6 +802,7 @@
         resetPositions();
         if (scoreHome >= MAX_GOALS || scoreAway >= MAX_GOALS) {
           showMessage('FIM DE JOGO! 🏆');
+          narrate('Fim de jogo!');
           state = 'end';
         }
       }
@@ -711,15 +814,24 @@
 
     // jogador
     if (user) {
-      const dx = (keys['d'] || keys['arrowright'] ? 1 : 0) - (keys['a'] || keys['arrowleft'] ? 1 : 0);
-      const dz = (keys['s'] || keys['arrowdown'] ? 1 : 0) - (keys['w'] || keys['arrowup'] ? 1 : 0);
-      const d = Math.hypot(dx, dz);
-      if (d > 0) {
-        user.x += dx / d * USER_SPEED * dt;
-        user.z += dz / d * USER_SPEED * dt;
-        const ang = Math.atan2(dx, dz);
-        user.facing = ang;
-        user.mesh.rotation.y = ang;
+      if (user.slideTimer > 0) {
+        // deslizando no carrinho
+        user.slideTimer -= dt;
+        if (user.slideTimer <= 0) { user.slideVx = 0; user.slideVz = 0; }
+        user.x += user.slideVx * dt;
+        user.z += user.slideVz * dt;
+        user.mesh.rotation.y = user.facing;
+      } else {
+        const dx = (keys['d'] || keys['arrowright'] ? 1 : 0) - (keys['a'] || keys['arrowleft'] ? 1 : 0);
+        const dz = (keys['s'] || keys['arrowdown'] ? 1 : 0) - (keys['w'] || keys['arrowup'] ? 1 : 0);
+        const d = Math.hypot(dx, dz);
+        if (d > 0) {
+          user.x += dx / d * USER_SPEED * dt;
+          user.z += dz / d * USER_SPEED * dt;
+          const ang = Math.atan2(dx, dz);
+          user.facing = ang;
+          user.mesh.rotation.y = ang;
+        }
       }
       user.x = clamp(user.x, -FIELD.boundX, FIELD.boundX);
       user.z = clamp(user.z, -FIELD.lineZ, FIELD.lineZ);
@@ -727,6 +839,9 @@
 
     // IA
     for (const p of players) if (!p.isUser) updateAI(p, dt);
+
+    // árbitro segue a jogada
+    updateReferee(dt);
 
     handlePossession(dt);
     separate(dt);
