@@ -269,7 +269,15 @@
     legR.position.set(0.16, 0.12, 0.12);
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 12), new THREE.MeshLambertMaterial({ color: skin }));
     head.position.y = 1.45;
-    g.add(body, chest, shorts, legL, legR, head);
+    const armGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.85, 8);
+    const armL = new THREE.Mesh(armGeo, new THREE.MeshLambertMaterial({ color: color }));
+    armL.position.set(-0.66, 0.95, 0);
+    armL.rotation.z = 0.22;
+    const armR = new THREE.Mesh(armGeo, new THREE.MeshLambertMaterial({ color: color }));
+    armR.position.set(0.66, 0.95, 0);
+    armR.rotation.z = -0.22;
+    g.add(body, chest, shorts, legL, legR, head, armL, armR);
+    g.userData.arms = [armL, armR];
     g.traverse(o => { if (o.isMesh) { o.castShadow = true; } });
     return g;
   }
@@ -400,6 +408,9 @@
   let state = 'play';
   let stateTimer = 0;
   const MAX_GOALS = 3;
+  const CELEBRATION_TIME = 10;
+  let lastGoalTeam = null;
+  let celebT = 0;
 
   const keys = {};
   window.addEventListener('keydown', (e) => {
@@ -430,7 +441,41 @@
     showMessage(m);
     if (state === 'play') {
       state = 'goal';
-      stateTimer = 2.4;
+      stateTimer = CELEBRATION_TIME;
+      celebT = 0;
+    }
+  }
+
+  // ---------- Comemoração do gol ----------
+  function celebrate(dt) {
+    celebT += dt;
+    const t = celebT;
+    for (const p of players) {
+      const arms = p.mesh.userData.arms;
+      if (lastGoalTeam && p.team === lastGoalTeam) {
+        // pulo de comemoração com braços pra cima
+        p.mesh.position.y = Math.abs(Math.sin(t * 5 + p.slot * 0.8)) * 1.2;
+        p.mesh.rotation.y = t * 5;
+        p.mesh.rotation.x = 0;
+        if (arms) { arms[0].rotation.x = -2.7; arms[1].rotation.x = -2.7; }
+      } else {
+        // time que sofreu: desanimado
+        p.mesh.rotation.y += dt * 0.4;
+        if (p.isKeeper) {
+          p.mesh.rotation.x = -Math.PI / 2;
+          p.mesh.position.y = 0.25;
+        } else {
+          p.mesh.rotation.x = 0;
+          p.mesh.position.y = 0;
+        }
+        if (arms) { arms[0].rotation.x = 0.35; arms[1].rotation.x = 0.35; }
+      }
+    }
+    const left = Math.max(0, Math.ceil(stateTimer));
+    if (lastGoalTeam === 'home') {
+      msgEl.textContent = 'GOOOOOL DO ' + USER_NAME + '! 🎉 Comemorando ' + left + 's';
+    } else {
+      msgEl.textContent = 'GOOOL DO CPU 😅 Comemorando ' + left + 's';
     }
   }
 
@@ -665,22 +710,26 @@
     if (forHome) {
       scoreHome++;
       updateScore();
+      lastGoalTeam = 'home';
       if (intoHomeGoal) {
         flash('GOL CONTRA! 😱 ' + USER_NAME);
-        narrate('Gol contra do ' + USER_NAME + '! O gol é do CPU!');
+        narrate('GOL CONTRA! Gol do CPU! Que o ' + USER_NAME + ' se cobre!');
       } else {
-        flash('GOOOOL DO ' + USER_NAME + '! ⚽');
-        narrate('GOOOOL! Gol do ' + USER_NAME + '! Que golaço!');
+        flash('GOOOOL DO ' + USER_NAME + '! ⚽🎉');
+        narrate('GOOOOOOOOOOOOOOOOOOOOL! GOOOOOOL DO ' + USER_NAME +
+          '! QUE GOLAZO! QUE GOLACO! NAO DA PRA ACREDITAR! ' +
+          USER_NAME + ' NOVO GOL! GOOOOOOOOOOOL!');
       }
     } else {
       scoreAway++;
       updateScore();
+      lastGoalTeam = 'away';
       if (intoHomeGoal) {
         flash('GOOOL DO CPU 😅');
-        narrate('O adversário marcou um gol!');
+        narrate('Gooooooooool do CPU! Gol do adversário! Que saque!');
       } else {
         flash('GOL CONTRA DO CPU! 😄 ' + USER_NAME);
-        narrate('Gol contra! O gol é do ' + USER_NAME + '!');
+        narrate('GOL CONTRA! GOOOOOOOOOL DO ' + USER_NAME + '! Bônus!');
       }
     }
   }
@@ -822,20 +871,23 @@
 
     if (state === 'goal') {
       stateTimer -= dt;
-      // anima bola parada
+      celebrate(dt);
       if (stateTimer <= 0) {
-        state = 'play';
-        // reposiciona
+        // reposiciona (o placar é mantido)
         players.forEach(p => scene.remove(p.mesh));
         if (ball && ball.mesh) scene.remove(ball.mesh);
-        resetPositions();
         if (scoreHome >= MAX_GOALS || scoreAway >= MAX_GOALS) {
-          showMessage('FIM DE JOGO! 🏆');
-          narrate('Fim de jogo!');
           state = 'end';
+          showMessage(scoreHome > scoreAway
+            ? 'FIM DE JOGO! 🏆 ' + USER_NAME + ' VENCEU ' + scoreHome + ' a ' + scoreAway
+            : 'FIM DE JOGO! 🏆 O CPU VENCEU ' + scoreAway + ' a ' + scoreHome);
+          narrate('Fim de jogo! ' + USER_NAME + ' ' + scoreHome + ' a ' + scoreAway + '.');
+        } else {
+          state = 'play';
+          resetPositions();
+          narrate('Bola rolando de novo! ' + USER_NAME + ' ' + scoreHome + ', CPU ' + scoreAway + '.');
         }
       }
-      // ainda roda câmera
       updateCamera(dt);
       return;
     }
