@@ -47,7 +47,7 @@
 <body>
 <div id="game"></div>
 <div id="hud">
-  <div id="score">VOCÊ 0 - 0 CPU</div>
+  <div id="score">JOAQUIM 0 - 0 CPU</div>
   <div id="msg"></div>
 </div>
 <div class="controls">
@@ -65,6 +65,7 @@
   const scoreEl = document.getElementById('score');
   const msgEl = document.getElementById('msg');
   const narrEl = document.getElementById('narrador') || document.createElement('div');
+  const USER_NAME = 'JOAQUIM';
 
   // ---------- Cena ----------
   const scene = new THREE.Scene();
@@ -243,7 +244,7 @@
   });
 
   // ---------- Configuração dos jogos ----------
-  const FIELD = { halfX: 50, halfZ: 40, boundX: 48, lineZ: 40, netZ: 46, goalHalf: 3.6 };
+  const FIELD = { halfX: 50, halfZ: 40, boundX: 48, lineZ: 40, netZ: 46, goalHalf: 3.6, goalDepth: 1.2 };
   const USER_SPEED = 11, AI_SPEED = 8.6, KEEPER_SPEED = 7;
   const PICK = 1.6, PLAYER_R = 0.8;
   const PASS_SPEED = 21, SHOT_SPEED = 40;
@@ -626,17 +627,25 @@
     }
     // limites de fundo (gol vs linha)
     if (ball.z <= -FIELD.lineZ || ball.z >= FIELD.lineZ) {
-      const underGoal = Math.abs(ball.x) < FIELD.goalHalf;
-      if (underGoal) {
+      const ax = Math.abs(ball.x);
+      if (ax < FIELD.goalHalf) {
         // dentro da baliza
-        const past = Math.abs(ball.z) > FIELD.netZ;
-        if (past) {
-          ball.z = clamp(ball.z, -FIELD.netZ - 2, FIELD.netZ + 2);
-          ball.vx *= 0.4; ball.vz *= 0;
+        if (Math.abs(ball.z) > FIELD.lineZ + FIELD.goalDepth) {
+          // cruzou a linha dentro do gol = ponto
+          ball.vx *= 0.4; ball.vz = 0;
           scoring(ball.z);
         } else {
-          ball.vz *= 0.4;
+          ball.vz *= 0.5;
         }
+        if (Math.abs(ball.z) > FIELD.netZ) {
+          // bateu na rede
+          ball.z = clamp(ball.z, -FIELD.netZ, FIELD.netZ);
+          ball.vz *= -0.2;
+        }
+      } else if (ax < FIELD.goalHalf + 0.6) {
+        // na trave
+        ball.x = Math.sign(ball.x) * (FIELD.goalHalf + 0.6);
+        ball.vx *= -0.45;
       } else {
         ball.z = clamp(ball.z, -FIELD.lineZ, FIELD.lineZ);
         ball.vz *= -0.35;
@@ -646,21 +655,38 @@
 
   function scoring(z) {
     if (state !== 'play') return;
-    if (z <= -FIELD.netZ) { // gol do azul (home)
-      flash('GOOOOL! ⚽');
-      narrate('GOOOOL! Que golaço do seu time!');
+    // z negativo = bola entrou no gol do CPU; z positivo = entrou no gol do JOAQUIM
+    const intoHomeGoal = z >= 0;
+    // quem deu o chute tem o crédito do gol (gol contra conta para o adversário)
+    const forHome = ball.kicker
+      ? (ball.kicker.team === 'home') !== intoHomeGoal
+      : !intoHomeGoal;
+
+    if (forHome) {
       scoreHome++;
       updateScore();
-    } else if (z >= FIELD.netZ) {
-      flash('GOOOL do CPU 😅');
-      narrate('O adversário marcou um gol!');
+      if (intoHomeGoal) {
+        flash('GOL CONTRA! 😱 ' + USER_NAME);
+        narrate('Gol contra do ' + USER_NAME + '! O gol é do CPU!');
+      } else {
+        flash('GOOOOL DO ' + USER_NAME + '! ⚽');
+        narrate('GOOOOL! Gol do ' + USER_NAME + '! Que golaço!');
+      }
+    } else {
       scoreAway++;
       updateScore();
+      if (intoHomeGoal) {
+        flash('GOOOL DO CPU 😅');
+        narrate('O adversário marcou um gol!');
+      } else {
+        flash('GOL CONTRA DO CPU! 😄 ' + USER_NAME);
+        narrate('Gol contra! O gol é do ' + USER_NAME + '!');
+      }
     }
   }
 
   function updateScore() {
-    scoreEl.textContent = `VOCÊ ${scoreHome} - ${scoreAway} CPU`;
+    scoreEl.textContent = `${USER_NAME} ${scoreHome} - ${scoreAway} CPU`;
   }
 
   // ---------- Posse e desarme ----------
@@ -687,17 +713,20 @@
         if (p.isUser) {
           if (d < 2.4) {
             ball.owner = p;
+            ball.kicker = p;
             showMessage('ROUBOU!');
             narrate('Roubada de bola!');
           }
         } else if (ball.owner.isUser) {
           if (d < 1.9 && Math.random() < dt * 1.2) {
             ball.owner = p;
+            ball.kicker = p;
             showMessage('PERDEU a bola!');
             narrate('Perdeu a bola para o CPU!');
           }
         } else if (d < 1.5 && Math.random() < dt * 1.4) {
           ball.owner = p;
+          ball.kicker = p;
         }
       }
       return;
@@ -712,6 +741,7 @@
       // quem acabou de chutar não pode recolher a bola na hora
       if (ball.kicker === best && ball.kickTimer > 0) return;
       ball.owner = best;
+      ball.kicker = best;
       if (best.team === 'away' && !best.isUser) best.kickTimer = 0.6 + Math.random() * 0.8;
       if (best.isUser) showMessage('BOLA COM VOCÊ!');
       else if (best.team === 'away') showMessage('CPU com a bola');
